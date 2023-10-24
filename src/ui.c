@@ -6,6 +6,7 @@
 
 #include "buildcfg.h"
 #include "xdg-shell-protocol.h"
+#include "wlr-layer-shell-unstable-v1-protocol.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -41,6 +42,8 @@ struct ui {
         struct wl_pointer* pointer;
         struct wl_surface* surface;
         struct wl_output* output;
+        struct zwlr_layer_shell_v1* layer_shell;
+        struct zwlr_layer_surface_v1* layer_surface;
     } wl;
 
     // outputs and their scale factors
@@ -364,6 +367,34 @@ static const struct wl_seat_listener seat_listener = { .capabilities =
                                                        .name = on_seat_name };
 
 /*******************************************************************************
+ * wlr layer handlers
+ ******************************************************************************/
+static void on_zwlr_layer_surface_v1_configure(void* data, struct zwlr_layer_surface_v1* surface,
+                                     uint32_t serial, uint32_t width, uint32_t height)
+{
+    struct ui* ctx = data;
+
+    const uint32_t cur_width = (uint32_t)(ctx->wnd.width / ctx->wnd.scale);
+    const uint32_t cur_height = (uint32_t)(ctx->wnd.height / ctx->wnd.scale);
+
+    if (width && height && (width != cur_width || height != cur_height)) {
+        ctx->wnd.width = width * ctx->wnd.scale;
+        ctx->wnd.height = height * ctx->wnd.scale;
+        if (!create_buffer(ctx)) {
+            ctx->state = state_error;
+        }
+    }
+
+    zwlr_layer_surface_v1_ack_configure(surface, serial);
+
+    redraw(ctx);
+}
+
+static const struct zwlr_layer_surface_v1_listener zwlr_layer_surface_v1_listener = {
+    .configure = on_zwlr_layer_surface_v1_configure
+};
+
+/*******************************************************************************
  * XDG handlers
  ******************************************************************************/
 static void on_xdg_surface_configure(void* data, struct xdg_surface* surface,
@@ -526,6 +557,8 @@ static void on_registry_global(void* data, struct wl_registry* registry,
     } else if (strcmp(interface, wl_seat_interface.name) == 0) {
         ctx->wl.seat = wl_registry_bind(registry, name, &wl_seat_interface, 4);
         wl_seat_add_listener(ctx->wl.seat, &seat_listener, data);
+    } else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
+        ctx->wl.layer_shell = wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface, 1);
     }
 }
 
@@ -579,20 +612,34 @@ struct ui* ui_create(const struct config* cfg,
         return NULL;
     }
     wl_surface_add_listener(ctx->wl.surface, &wl_surface_listener, ctx);
-
-    ctx->xdg.surface =
-        xdg_wm_base_get_xdg_surface(ctx->xdg.base, ctx->wl.surface);
-    if (!ctx->xdg.surface) {
-        fprintf(stderr, "Failed to create xdg surface\n");
-        ui_free(ctx);
-        return NULL;
-    }
-    xdg_surface_add_listener(ctx->xdg.surface, &xdg_surface_listener, ctx);
-    ctx->xdg.toplevel = xdg_surface_get_toplevel(ctx->xdg.surface);
-    xdg_toplevel_add_listener(ctx->xdg.toplevel, &xdg_toplevel_listener, ctx);
-    xdg_toplevel_set_app_id(ctx->xdg.toplevel, cfg->app_id);
-    if (cfg->fullscreen) {
-        xdg_toplevel_set_fullscreen(ctx->xdg.toplevel, NULL);
+    if (cfg->layer) {
+        ctx->wl.layer_surface = zwlr_layer_shell_v1_get_layer_surface(ctx->wl.layer_shell, ctx->wl.surface, NULL, ZWLR_LAYER_SHELL_V1_LAYER_TOP, "swayimg");
+        if (!ctx->wl.layer_surface) {
+            fprintf(stderr, "Failed to create layer surface\n");
+            ui_free(ctx);
+            return NULL;
+        }
+        if (cfg->fullscreen) {
+            zwlr_layer_surface_v1_set_anchor(ctx->wl.layer_surface, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+        } else {
+            zwlr_layer_surface_v1_set_size(ctx->wl.layer_surface, ctx->wnd.width, ctx->wnd.height);
+        }
+        zwlr_layer_surface_v1_add_listener(ctx->wl.layer_surface, &zwlr_layer_surface_v1_listener, ctx);
+    } else {
+        ctx->xdg.surface =
+            xdg_wm_base_get_xdg_surface(ctx->xdg.base, ctx->wl.surface);
+        if (!ctx->xdg.surface) {
+            fprintf(stderr, "Failed to create xdg surface\n");
+            ui_free(ctx);
+            return NULL;
+        }
+        xdg_surface_add_listener(ctx->xdg.surface, &xdg_surface_listener, ctx);
+        ctx->xdg.toplevel = xdg_surface_get_toplevel(ctx->xdg.surface);
+        xdg_toplevel_add_listener(ctx->xdg.toplevel, &xdg_toplevel_listener, ctx);
+        xdg_toplevel_set_app_id(ctx->xdg.toplevel, cfg->app_id);
+        if (cfg->fullscreen) {
+            xdg_toplevel_set_fullscreen(ctx->xdg.toplevel, NULL);
+        }
     }
 
     wl_surface_commit(ctx->wl.surface);
@@ -656,6 +703,12 @@ void ui_free(struct ui* ctx)
     }
     if (ctx->wl.output) {
         wl_output_destroy(ctx->wl.output);
+    }
+    if (ctx->wl.layer_surface) {
+        zwlr_layer_surface_v1_destroy(ctx->wl.layer_surface);
+    }
+    if (ctx->wl.layer_shell) {
+        zwlr_layer_shell_v1_destroy(ctx->wl.layer_shell);
     }
     if (ctx->wl.surface) {
         wl_surface_destroy(ctx->wl.surface);
@@ -746,15 +799,19 @@ void ui_stop(struct ui* ctx)
 
 void ui_set_title(struct ui* ctx, const char* title)
 {
-    xdg_toplevel_set_title(ctx->xdg.toplevel, title);
+    if (ctx->xdg.toplevel) {
+        xdg_toplevel_set_title(ctx->xdg.toplevel, title);
+    }
 }
 
 void ui_set_fullscreen(struct ui* ctx, bool enable)
 {
-    if (enable) {
-        xdg_toplevel_set_fullscreen(ctx->xdg.toplevel, NULL);
-    } else {
-        xdg_toplevel_unset_fullscreen(ctx->xdg.toplevel);
+    if (ctx->xdg.toplevel) {
+        if (enable) {
+            xdg_toplevel_set_fullscreen(ctx->xdg.toplevel, NULL);
+        } else {
+            xdg_toplevel_unset_fullscreen(ctx->xdg.toplevel);
+        }
     }
 }
 

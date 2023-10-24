@@ -246,6 +246,8 @@ static bool apply_conf(struct config* ctx, const char* key, const char* value)
         return config_set_scale(ctx, value);
     } else if (strcmp(key, "fullscreen") == 0) {
         return set_boolean(value, &ctx->fullscreen);
+    } else if (strcmp(key, "layer") == 0) {
+        return set_boolean(value, &ctx->layer);
     } else if (strcmp(key, "background") == 0) {
         return config_set_background(ctx, value);
     } else if (strcmp(key, "window") == 0) {

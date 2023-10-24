@@ -82,6 +82,8 @@ configure_file(output: 'buildcfg.h', configuration: conf)
 # Wayland protocols
 wlproto = dependency('wayland-protocols')
 wlproto_dir = wlproto.get_variable(pkgconfig : 'pkgdatadir')
+wlrproto = dependency('wlr-protocols')
+wlrproto_dir = wlrproto.get_variable(pkgconfig : 'pkgdatadir')
 wlscan = dependency('wayland-scanner', required: false, native: true)
 if wlscan.found()
   wl_scanner = find_program(wlscan.get_variable(pkgconfig : 'wayland_scanner'), native: true)
@@ -101,6 +103,21 @@ xdg_shell_h = custom_target(
   'xdg-shell-protocol.h',
   output: 'xdg-shell-protocol.h',
   input: xdg_shell_xml,
+  command: [wl_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+
+# wlr layer shell Wayland protocol
+wlr_layer_shell_unstable_v1_xml = join_paths(wlrproto_dir, 'unstable/wlr-layer-shell-unstable-v1.xml')
+wlr_layer_shell_unstable_v1_c = custom_target(
+  'wlr-layer-shell-unstable-v1-protocol.c',
+  output: 'wlr-layer-shell-unstable-v1-protocol.c',
+  input: wlr_layer_shell_unstable_v1_xml,
+  command: [wl_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+wlr_layer_shell_unstable_v1_h = custom_target(
+  'wlr-layer-shell-unstable-v1-protocol.h',
+  output: 'wlr-layer-shell-unstable-v1-protocol.h',
+  input: wlr_layer_shell_unstable_v1_xml,
   command: [wl_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
 )
 
@@ -158,6 +175,8 @@ sources = [
   'src/formats/loader.c',
   xdg_shell_h,
   xdg_shell_c,
+  wlr_layer_shell_unstable_v1_h,
+  wlr_layer_shell_unstable_v1_c,
 ]
 if exif.found()
   sources += 'src/exif.c'

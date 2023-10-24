@@ -78,6 +78,7 @@ struct config {
     bool sway_wm;            ///< Enable/disable integration with Sway WM
     struct rect geometry;    ///< Window geometry
     bool fullscreen;         ///< Full screen mode
+    bool layer;              ///< Top layer mode
     bool antialiasing;       ///< Anti-aliasing
     argb_t background;       ///< Image background mode/color
     argb_t window;           ///< Window background mode/color
